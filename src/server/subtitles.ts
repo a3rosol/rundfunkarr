@@ -42,6 +42,21 @@ function xmlText(node: XmlNode): string {
   return node._ || "";
 }
 
+function playbackSubtitleUrl(source: string): string {
+  const url = new URL(source);
+  // ARD EBU-TT can use a broadcast timeline starting at 10:00:00. Its
+  // corresponding WebVTT uses playback times, including the initial silence.
+  // Do not guess an offset from the first cue or rewrite other providers.
+  if (
+    url.hostname === "api.ardmediathek.de" &&
+    url.pathname.startsWith("/player-service/subtitle/ebutt/urn:ard:subtitle:")
+  ) {
+    url.pathname = url.pathname.replace("/subtitle/ebutt/", "/subtitle/webvtt/") + ".vtt";
+    return url.toString();
+  }
+  return source;
+}
+
 export async function subtitleToSrt(source: string): Promise<string> {
   const input = source
     .replace(/^\uFEFF/, "")
@@ -161,7 +176,7 @@ export async function processSubtitles(
   let directory: string | undefined;
   let artifact: SubtitleArtifact | null = null;
   try {
-    const srt = await subtitleToSrt(await fetchSubtitle(metadata.subtitleUrl));
+    const srt = await subtitleToSrt(await fetchSubtitle(playbackSubtitleUrl(metadata.subtitleUrl)));
     directory = await fs.mkdtemp(path.join(path.dirname(videoPath), ".rundfunkarr-subtitles-"));
     const staged = path.join(directory, "subtitle.srt");
     await fs.writeFile(staged, srt, { encoding: "utf8", flag: "wx" });
