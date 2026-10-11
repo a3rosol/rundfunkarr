@@ -7,6 +7,73 @@ import type { TvdbData, TvdbEpisode, TvdbAlias } from "@/types";
 
 const TVDB_API_URL = "https://api4.thetvdb.com/v4";
 
+interface ApiEpisode {
+  id: number;
+  name?: string | null;
+  aired?: string;
+  runtime?: number | null;
+  seasonNumber: number;
+  number: number;
+}
+
+/** Fetch translated titles in pages, rather than making a request per episode. */
+async function getGermanTitles(tvdbId: number, token: string) {
+  const base = `${TVDB_API_URL}/series/${tvdbId}`;
+  const options = {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(30_000),
+  };
+  const fetchData = async (url: string) => {
+    options.signal.throwIfAborted();
+    const response = await fetchWithRetry(url, options, { maxRetries: 0 });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`TVDB translation request failed (${response.status})`);
+    const data = await response.json();
+    if (data?.status !== "success" || !data.data)
+      throw new Error("Invalid TVDB translation response");
+    return data;
+  };
+
+  const translation = await fetchData(`${base}/translations/deu`);
+  const name = translation?.data?.name;
+  const germanName = typeof name === "string" && name.trim() ? name.trim() : null;
+  const episodeNames = new Map<number, string>();
+  const endpoint = `${base}/episodes/default/deu`;
+  let page = 0;
+  // A malformed pagination chain must not hang a search or cache a partial list.
+  for (let requests = 0; requests < 100; requests++) {
+    const data = await fetchData(`${endpoint}?page=${page}`);
+    if (!data) {
+      if (page === 0) return { germanName, episodeNames };
+      throw new Error("Missing TVDB translation page");
+    }
+    if (!Array.isArray(data.data.episodes)) throw new Error("Invalid TVDB episode translations");
+    for (const episode of data.data.episodes) {
+      if (
+        Number.isSafeInteger(episode.id) &&
+        typeof episode.name === "string" &&
+        episode.name.trim()
+      )
+        episodeNames.set(episode.id, episode.name.trim());
+    }
+    const next = data.links?.next;
+    if (!next) return { germanName, episodeNames };
+    const nextUrl = new URL(next, endpoint);
+    const pageValue = nextUrl.searchParams.get("page") || "";
+    const nextPage = Number(pageValue);
+    if (
+      nextUrl.origin + nextUrl.pathname !== endpoint ||
+      !/^\d+$/.test(pageValue) ||
+      !Number.isSafeInteger(nextPage) ||
+      nextPage <= page
+    )
+      throw new Error("Invalid TVDB translation pagination");
+    // Construct our own URL; never forward the token to a returned next URL.
+    page = nextPage;
+  }
+  throw new Error("TVDB translation pagination limit exceeded");
+}
+
 // Token management
 let cachedToken: string | null = null;
 let tokenExpiry: Date | null = null;
@@ -158,6 +225,7 @@ async function fetchAndCacheSeriesData(tvdbId: number): Promise<TvdbData | null>
           Authorization: `Bearer ${token}`,
           Accept: "application/json",
         },
+        signal: AbortSignal.timeout(30_000),
       }
     );
 
@@ -170,8 +238,15 @@ async function fetchAndCacheSeriesData(tvdbId: number): Promise<TvdbData | null>
 
     const series = data.data;
 
-    // Extract German name from translations
-    const germanName = series.nameTranslations?.deu || series.name;
+    // nameTranslations contains language codes, not translated names. Join
+    // translated episode titles by ID while retaining the original numbering
+    // and any episodes for which a German translation is not available.
+    const titles = await getGermanTitles(tvdbId, token);
+    const germanName = titles.germanName || series.name;
+    const translatedEpisodes: ApiEpisode[] = (series.episodes || []).map((ep: ApiEpisode) => ({
+      ...ep,
+      name: titles.episodeNames.get(ep.id) || ep.name || "",
+    }));
 
     // Extract German aliases
     const rawAliases = series.aliases || [];
@@ -203,21 +278,13 @@ async function fetchAndCacheSeriesData(tvdbId: number): Promise<TvdbData | null>
     }
 
     // Map episodes
-    const episodes: TvdbEpisode[] = (series.episodes || []).map(
-      (ep: {
-        name?: string;
-        aired?: string;
-        runtime?: number;
-        seasonNumber: number;
-        number: number;
-      }) => ({
-        name: ep.name || "",
-        aired: ep.aired ? new Date(ep.aired) : null,
-        runtime: ep.runtime || null,
-        seasonNumber: ep.seasonNumber,
-        episodeNumber: ep.number,
-      })
-    );
+    const episodes: TvdbEpisode[] = translatedEpisodes.map((ep) => ({
+      name: ep.name || "",
+      aired: ep.aired ? new Date(ep.aired) : null,
+      runtime: ep.runtime || null,
+      seasonNumber: ep.seasonNumber,
+      episodeNumber: ep.number,
+    }));
 
     // Store in database
     await prisma.$transaction(async (tx) => {
@@ -239,24 +306,15 @@ async function fetchAndCacheSeriesData(tvdbId: number): Promise<TvdbData | null>
       });
 
       // Insert episodes in batch
-      const episodesData = (series.episodes || []).map(
-        (ep: {
-          id: number;
-          name?: string;
-          aired?: string;
-          runtime?: number;
-          seasonNumber: number;
-          number: number;
-        }) => ({
-          id: ep.id,
-          seriesId: tvdbId,
-          name: ep.name || "",
-          aired: ep.aired ? new Date(ep.aired) : null,
-          runtime: ep.runtime || null,
-          seasonNumber: ep.seasonNumber,
-          episodeNumber: ep.number,
-        })
-      );
+      const episodesData = translatedEpisodes.map((ep) => ({
+        id: ep.id,
+        seriesId: tvdbId,
+        name: ep.name || "",
+        aired: ep.aired ? new Date(ep.aired) : null,
+        runtime: ep.runtime || null,
+        seasonNumber: ep.seasonNumber,
+        episodeNumber: ep.number,
+      }));
 
       if (episodesData.length > 0) {
         await tx.tvdbEpisode.createMany({ data: episodesData });
