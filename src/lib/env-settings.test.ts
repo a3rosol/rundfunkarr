@@ -70,6 +70,15 @@ describe("environment settings initialization", () => {
     expect(await getSetting("download.path")).toBe("/ui/downloads");
   });
 
+  it("accepts only known Mediathek search sources", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await initSettingsFromEnv({ MEDIATHEK_SOURCE: "lokal" })).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("MEDIATHEK_SOURCE=lokal ignored"));
+    expect(await initSettingsFromEnv({ MEDIATHEK_SOURCE: " Local " })).toBe(1);
+    expect(await getSetting("mediathek.source")).toBe("local");
+    warn.mockRestore();
+  });
+
   it("ignores missing or blank variables", async () => {
     expect(await initSettingsFromEnv({ TVDB_API_KEY: "", TMDB_API_KEY: " \n " })).toBe(0);
     expect(await prisma.config.count()).toBe(0);

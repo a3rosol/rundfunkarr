@@ -43,6 +43,32 @@ Die MKV-Einstellung gilt auch für HLS: aktiviert ergibt MKV, deaktiviert MP4.
 Docker enthält eine feste yt-dlp-Version mit Prüfsummenprüfung. Native Installationen
 können einen eigenen Programmpfad oder den ebenfalls geprüften automatischen Download nutzen.
 
+## Lokaler Filmlisten-Index
+
+Unter Settings → Allgemein → **Mediathek-Suchquelle** lässt sich zwischen
+**MediathekViewWeb (online)** und dem **lokalen Filmlisten-Index** umschalten. Lokal lädt
+RundfunkArr die MediathekView-Filmliste selbst herunter und durchsucht sie, statt jede Suche an
+mediathekviewweb.de zu schicken.
+
+<p align="center">
+  <img src="docs/screenshots/mediathek-suchquelle.png" alt="Mediathek-Suchquelle in den Einstellungen" width="600">
+</p>
+
+Die Suche verhält sich wie bei MediathekViewWeb
+(Wortanfänge, Umlaute als ae/oe/ue, dieselben Filter) und liefert dieselben Treffer.
+
+- Der Index liegt als `filmliste.db` neben der Datenbank (im Docker-Volume `./data`) und
+  benötigt etwa 800 MB. Pro Aktualisierung werden rund 80 MB geladen; der Import dauert
+  etwa eine Minute.
+- Die Liste wird im eingestellten Intervall (Standard: 2 Stunden) geprüft und nur bei einer
+  neuen Version geladen.
+- Solange der Index nicht bereit ist, die Liste älter als 24 Stunden ist oder eine Suche
+  fehlschlägt, nutzt RundfunkArr weiterhin MediathekViewWeb.
+- Native Installationen benötigen das Programm `xz` zum Entpacken; das Docker-Image enthält es.
+- Ohne Oberfläche lässt sich die Quelle mit der Umgebungsvariablen `MEDIATHEK_SOURCE=local`
+  (oder `mediathekviewweb`) festlegen, etwa in der `docker-compose.yml`. Wie bei den
+  API-Keys gilt sie nur, solange in den Einstellungen noch nichts gespeichert wurde.
+
 ## Installation mit Docker
 
 ### docker-compose.yml
@@ -99,6 +125,7 @@ docker-compose up -d
 - Node.js >= 24
 - npm
 - FFmpeg (für MKV-Konvertierung)
+- xz (nur für den optionalen lokalen Filmlisten-Index)
 
 ### Setup
 
@@ -131,10 +158,11 @@ npm start
 | `TVDB_API_KEY` | TVDB-API-Key zum Initialisieren der Einstellungen | leer |
 | `TVDB_PIN` | Optionaler TVDB-PIN für Subscriber-Keys | leer |
 | `TMDB_API_KEY` | TMDB-API-Key zum Initialisieren der Einstellungen | leer |
+| `MEDIATHEK_SOURCE` | Suchquelle zum Initialisieren der Einstellungen: `mediathekviewweb` oder `local` | `mediathekviewweb` |
 | `DIAGNOSTICS_ADMIN_KEY` | Admin-Schlüssel für Diagnose, Verbindungstest und Protokoll einschließlich Export; mindestens 32 Zeichen | leer (Zugriff gesperrt) |
 
 Beim Serverstart werden nichtleere Werte aus `TVDB_API_KEY`, `TVDB_PIN`,
-`TMDB_API_KEY` und `DOWNLOAD_FOLDER_PATH` in fehlende oder leere
+`TMDB_API_KEY`, `DOWNLOAD_FOLDER_PATH` und `MEDIATHEK_SOURCE` in fehlende oder leere
 Datenbank-Einstellungen übernommen. Bereits gespeicherte Werte haben Vorrang.
 Bei lokalen Installationen können die Variablen in `.env` stehen; Docker benötigt
 sie unter `environment` oder über `env_file`. Nach Änderungen ist ein Neustart
@@ -412,7 +440,8 @@ src/
 │   └── rulesets.ts    # Matching Rules
 ├── server/            # Server-Side Only
 │   ├── download-manager.ts
-│   └── ffmpeg.ts
+│   ├── ffmpeg.ts
+│   └── filmliste/     # Lokaler Filmlisten-Index (Import, SQLite-Suche)
 └── lib/               # Utilities
     ├── db.ts          # Prisma Client
     ├── cache.ts       # Dynamic TTL Caches

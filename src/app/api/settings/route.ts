@@ -27,6 +27,10 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   "matching.threshold": "0.7",
   "matching.minDuration": "300",
 
+  // MediathekView search source: "mediathekviewweb" or "local"
+  "mediathek.source": "mediathekviewweb",
+  "mediathek.localIndex.updateHours": "2",
+
   // Cache
   "cache.ttl.search": "3600",
   "cache.ttl.metadata": "86400",

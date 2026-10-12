@@ -7,7 +7,13 @@ const ENV_SETTINGS = {
   TVDB_PIN: "api.tvdb.pin",
   TMDB_API_KEY: "api.tmdb.key",
   DOWNLOAD_FOLDER_PATH: "download.path",
+  MEDIATHEK_SOURCE: "mediathek.source",
 } as const;
+
+/** Variables with a fixed set of values; anything else is ignored with a warning. */
+const ENV_ALLOWED_VALUES: Partial<Record<keyof typeof ENV_SETTINGS, readonly string[]>> = {
+  MEDIATHEK_SOURCE: ["mediathekviewweb", "local"],
+};
 
 /** Initialize empty settings from runtime environment variables, preserving UI configuration. */
 export async function initSettingsFromEnv(
@@ -18,7 +24,13 @@ export async function initSettingsFromEnv(
 
   const entries = Object.entries(ENV_SETTINGS).flatMap(([variable, key]) => {
     const value = env[variable]?.trim();
-    return value ? [{ key, value }] : [];
+    if (!value) return [];
+    const allowed = ENV_ALLOWED_VALUES[variable as keyof typeof ENV_SETTINGS];
+    if (allowed && !allowed.includes(value.toLowerCase())) {
+      console.warn(`[Settings] ${variable}=${value} ignored; allowed: ${allowed.join(", ")}`);
+      return [];
+    }
+    return [{ key, value: allowed ? value.toLowerCase() : value }];
   });
   if (entries.length === 0) return 0;
 
