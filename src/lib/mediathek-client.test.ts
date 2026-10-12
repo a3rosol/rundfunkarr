@@ -1,12 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchWithRetry } from "./fetch-retry";
 import { queryMediathekView } from "./mediathek-client";
+import { searchLocalFilmliste } from "@/server/filmliste";
 
 vi.mock("./fetch-retry", () => ({ fetchWithRetry: vi.fn() }));
+vi.mock("@/server/filmliste", () => ({ searchLocalFilmliste: vi.fn(async () => undefined) }));
 
 beforeEach(() => vi.resetAllMocks());
 
 describe("queryMediathekView", () => {
+  it("answers from the local Filmliste index without calling the API", async () => {
+    const local = [{ ...validItem, title: "Lokal" }];
+    vi.mocked(searchLocalFilmliste).mockResolvedValue(local);
+    const queries = [{ fields: ["topic"], query: "News" }];
+    expect(await queryMediathekView(queries, 10, { future: false })).toBe(local);
+    expect(searchLocalFilmliste).toHaveBeenCalledWith(queries, 10, { future: false });
+    expect(fetchWithRetry).not.toHaveBeenCalled();
+  });
+
   it("preserves successful empty results", async () => {
     vi.mocked(fetchWithRetry).mockResolvedValue(
       Response.json({ result: { results: [] }, err: null })

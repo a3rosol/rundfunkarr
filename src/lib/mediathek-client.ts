@@ -11,9 +11,10 @@
  * to one implementation removes that whole class of bug.
  */
 import { fetchWithRetry } from "@/lib/fetch-retry";
+import { searchLocalFilmliste } from "@/server/filmliste";
 import type { ApiResultItem, MediathekApiResponse } from "@/types";
 
-const MEDIATHEK_API_URL = "https://mediathekviewweb.de/api/query";
+export const MEDIATHEK_API_URL = "https://mediathekviewweb.de/api/query";
 
 export interface MediathekQueryField {
   fields: string[];
@@ -27,7 +28,8 @@ export interface MediathekQueryOptions {
 }
 
 /**
- * Query MediathekViewWeb and return the parsed result items.
+ * Query the local Filmliste index when it is enabled and current, otherwise
+ * MediathekViewWeb, and return the parsed result items.
  * Returns null on request, API, or parse failures so callers can avoid
  * caching an outage as a successful empty result.
  */
@@ -36,6 +38,9 @@ export async function queryMediathekView(
   size: number,
   options: MediathekQueryOptions = {}
 ): Promise<ApiResultItem[] | null> {
+  const local = await searchLocalFilmliste(queries, size, options);
+  if (local) return local;
+
   const requestBody = {
     queries,
     sortBy: options.sortBy ?? "filmlisteTimestamp",

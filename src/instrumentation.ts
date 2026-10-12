@@ -31,6 +31,8 @@ export async function register() {
       await recoverDownloads();
       const { startSubscriptionScheduler } = await import("@/server/subscriptions");
       startSubscriptionScheduler();
+      const { startFilmlisteScheduler } = await import("@/server/filmliste");
+      startFilmlisteScheduler();
     }
   }
 }

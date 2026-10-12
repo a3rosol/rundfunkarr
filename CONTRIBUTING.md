@@ -4,10 +4,10 @@ Vielen Dank für dein Interesse an RundfunkArr! Wir freuen uns über jede Art vo
 
 ## Sprache
 
-- **Dokumentation**: Deutsch
+- **Dokumentation & Oberfläche**: Deutsch
 - **Code & Kommentare**: Englisch
-- **Commit Messages**: Englisch (Conventional Commits)
-- **Issues & Pull Requests**: Deutsch oder Englisch
+- **Commit Messages**: Deutsch (Conventional Commits; Type und Scope bleiben englisch)
+- **Issues & Pull Requests**: Deutsch
 
 ## Entwicklungsumgebung einrichten
 
@@ -67,7 +67,7 @@ npm run dev
 
 ### Conventional Commits
 
-Wir verwenden [Conventional Commits](https://www.conventionalcommits.org/) für einheitliche Commit Messages:
+Wir verwenden [Conventional Commits](https://www.conventionalcommits.org/) für einheitliche Commit Messages. Type und Scope sind englische Schlüsselwörter, Beschreibung und Body schreiben wir auf Deutsch:
 
 ```
 <type>(<scope>): <description>
@@ -91,10 +91,10 @@ Wir verwenden [Conventional Commits](https://www.conventionalcommits.org/) für 
 **Beispiele:**
 
 ```
-feat(indexer): add support for Arte mediathek
-fix(download): handle timeout errors gracefully
-docs: update installation instructions
-chore(deps): update eslint to v9
+feat(indexer): Unterstützung für die Arte-Mediathek hinzufügen
+fix(download): Zeitüberschreitungen sauber behandeln
+docs: Installationsanleitung aktualisieren
+chore(deps): ESLint auf v9 aktualisieren
 ```
 
 ## Shows & Rulesets hinzufügen

@@ -2,7 +2,7 @@ import { isStreamingUrl } from "@/lib/stream-url";
 import { BaseProvider } from "./base";
 import { fetchWithRetry } from "@/lib/fetch-retry";
 import { getMinDurationSeconds, getSetting } from "@/lib/settings";
-import { queryMediathekView } from "@/lib/mediathek-client";
+import { MEDIATHEK_API_URL, queryMediathekView } from "@/lib/mediathek-client";
 import type { ApiResultItem } from "@/types";
 import type {
   ProviderCapabilities,
@@ -10,8 +10,6 @@ import type {
   ProviderSearchQuery,
   ProviderStatus,
 } from "@/types/provider";
-
-const MEDIATHEK_API_URL = "https://mediathekviewweb.de/api/query";
 
 // Keywords that are always skipped (trailers, outtakes, etc.)
 const SKIP_KEYWORDS = ["Trailer", "Outtakes:", "(klare Sprache)"];

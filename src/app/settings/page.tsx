@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { SecuritySettings } from "@/components/auth/security-settings";
+import { FilmlisteIndexSettings } from "@/components/settings/filmliste-index-settings";
 import { useSettings } from "@/contexts/settings-context";
 import { validateApiCredentials } from "@/lib/validate-api-credentials";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -431,6 +432,8 @@ export default function SettingsPage() {
                   </Button>
                 </CardContent>
               </Card>
+
+              <FilmlisteIndexSettings />
             </TabsContent>
 
             {/* API Keys Tab */}

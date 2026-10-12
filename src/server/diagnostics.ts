@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/db";
 import { getSetting } from "@/lib/settings";
+import { MEDIATHEK_API_URL } from "@/lib/mediathek-client";
+import { getFilmlisteStatus } from "@/server/filmliste";
 import { rememberLogSecret } from "@/lib/logger";
 import { access, constants, stat } from "node:fs/promises";
 import path from "node:path";
@@ -102,7 +104,7 @@ export async function systemDiagnostics(): Promise<Diagnostic[]> {
     });
   else {
     try {
-      const response = await fetch("https://mediathekviewweb.de/api/query", {
+      const response = await fetch(MEDIATHEK_API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -129,6 +131,7 @@ export async function systemDiagnostics(): Promise<Diagnostic[]> {
       });
     }
   }
+  rows.push(await filmlisteDiagnostic());
   const hls = (await getSetting("download.enableHLS")) === "true";
   rows.push({
     id: "streaming",
@@ -140,6 +143,49 @@ export async function systemDiagnostics(): Promise<Diagnostic[]> {
   });
   console.info("[Diagnose] Systemprüfung abgeschlossen.");
   return rows;
+}
+async function filmlisteDiagnostic(): Promise<Diagnostic> {
+  const row = { id: "filmliste", label: "Lokaler Filmlisten-Index" };
+  try {
+    const status = await getFilmlisteStatus();
+    if (!status.enabled)
+      return {
+        ...row,
+        status: "info",
+        message: "Nicht als Suchquelle gewählt; Suchen nutzen MediathekViewWeb.",
+      };
+    const listDate = status.listTimestamp
+      ? new Date(status.listTimestamp * 1000).toLocaleString("de-DE", {
+          timeZone: process.env.TZ || "Europe/Berlin",
+        })
+      : null;
+    if (status.usable)
+      return {
+        ...row,
+        status: status.lastError ? "warn" : "ok",
+        message:
+          `${status.entryCount.toLocaleString("de-DE")} Einträge, Filmliste vom ${listDate}. Suchen laufen lokal.` +
+          (status.lastError ? ` Letzte Aktualisierung fehlgeschlagen: ${status.lastError}` : ""),
+      };
+    if (status.running && !status.listTimestamp)
+      return {
+        ...row,
+        status: "info",
+        message: `Erster Import läuft (${status.processedEntries.toLocaleString("de-DE")} Einträge). Bis dahin wird MediathekViewWeb verwendet.`,
+      };
+    return {
+      ...row,
+      status: "warn",
+      message:
+        (status.lastError
+          ? `Aktualisierung fehlgeschlagen: ${status.lastError}.`
+          : listDate
+            ? `Die Filmliste vom ${listDate} ist älter als 24 Stunden.`
+            : "Noch keine Filmliste importiert.") + " Suchen nutzen MediathekViewWeb.",
+    };
+  } catch {
+    return { ...row, status: "error", message: "Der Index kann nicht geöffnet werden." };
+  }
 }
 export async function testArrConnection(
   kind: "sonarr" | "radarr",
