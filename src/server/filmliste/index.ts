@@ -160,6 +160,12 @@ function decompress(body: ReadableStream<Uint8Array>) {
   return { text: xz.stdout as AsyncIterable<string>, exited, kill };
 }
 
+/**
+ * Keep the server responsive between synchronous SQLite batches. Not
+ * timers/promises' setImmediate: Next.js patches it and it overflows the stack.
+ */
+const yieldToEventLoop = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 async function runUpdate(force: boolean): Promise<UpdateResult> {
   state.lastCheckAt = Date.now();
   state.processedEntries = 0;
@@ -187,6 +193,8 @@ async function runUpdate(force: boolean): Promise<UpdateResult> {
   if (!response.ok || !response.body) {
     throw new Error(`Download der Filmliste fehlgeschlagen (HTTP ${response.status})`);
   }
+  // Leftovers of a failed attempt are invisible but must not reach the next publish.
+  while (store.discardPending() > 0) await yieldToEventLoop();
   const xz = decompress(response.body);
   const generation = store.beginImport();
   const stats = { skipped: 0 };
@@ -196,9 +204,7 @@ async function runUpdate(force: boolean): Promise<UpdateResult> {
     store.writeBatch(batch, generation, listTimestamp!);
     state.processedEntries += batch.length;
     batch = [];
-    // Keep the server responsive between synchronous SQLite batches. Not
-    // timers/promises' setImmediate: Next.js patches it and it overflows the stack.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await yieldToEventLoop();
   };
   try {
     for await (const record of parseFilmliste(xz.text, stats)) {
@@ -253,16 +259,19 @@ export function updateFilmliste(options: { force?: boolean } = {}): Promise<Upda
   return state.running;
 }
 
-async function runScheduledUpdate() {
+/** Scheduler tick; exported for tests. */
+export async function runScheduledUpdate() {
   if (state.running || !(await isLocalIndexEnabled())) return;
   const intervalMs = (await getUpdateHours()) * 60 * 60 * 1000;
   // Retry failed updates after a quarter of the interval instead of waiting a full cycle.
+  // This also applies before the first successful import: each attempt downloads ~80 MB.
   const waitMs = state.lastError ? intervalMs / 4 : intervalMs;
-  const info = getStore().info();
-  if (info.entryCount > 0 && state.lastCheckAt && Date.now() - state.lastCheckAt < waitMs) return;
-  if (info.entryCount > 0 && !state.lastCheckAt && info.importedAt) {
+  if (state.lastCheckAt) {
+    if (Date.now() - state.lastCheckAt < waitMs) return;
+  } else {
     // After a restart, continue the interval from the last successful import.
-    if (Date.now() - info.importedAt < waitMs) return;
+    const { importedAt } = getStore().info();
+    if (importedAt && Date.now() - importedAt < waitMs) return;
   }
   await updateFilmliste();
 }

@@ -15,7 +15,7 @@ import type { ApiResultItem } from "@/types";
 import type { FilmlisteEntry } from "./parser";
 import { buildMatchExpression, foldText } from "./text";
 
-const SCHEMA_VERSION = "1";
+const SCHEMA_VERSION = "2";
 /** MediathekViewWeb never returns more than 1000 results per query. */
 export const MAX_RESULTS = 1000;
 
@@ -57,50 +57,48 @@ export function resolveFilmlistePath(): string {
   const url = process.env.DATABASE_URL ?? "file:./data/rundfunkarr.db";
   const file = url.replace(/^file:/, "").split("?")[0];
   const databasePath = path.isAbsolute(file) ? file : path.resolve(process.cwd(), "prisma", file);
-  return path.join(path.dirname(databasePath), "filmliste.db");
+  const indexPath = path.join(path.dirname(databasePath), "filmliste.db");
+  // Deleting or rebuilding the index removes its file; never let it alias the main database.
+  return indexPath === databasePath
+    ? path.join(path.dirname(databasePath), "filmliste-index.db")
+    : indexPath;
 }
 
 export function removeIndexFiles(filePath: string) {
   for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(filePath + suffix, { force: true });
 }
 
-function entryHash(entry: FilmlisteEntry): string {
+/**
+ * Stable identity of a film. Description, size, subtitle and other metadata may
+ * change between lists; such updates must not make an old film look new.
+ */
+function entryKey(entry: FilmlisteEntry): string {
   return createHash("sha1")
-    .update(
-      JSON.stringify([
-        entry.channel,
-        entry.topic,
-        entry.title,
-        entry.description,
-        entry.timestamp,
-        entry.duration,
-        entry.size,
-        entry.url_website,
-        entry.url_subtitle,
-        entry.url_video,
-        entry.url_video_low,
-        entry.url_video_hd,
-      ])
-    )
+    .update(JSON.stringify([entry.channel, entry.topic, entry.title, entry.url_video]))
     .digest("base64url");
 }
 
 export class FilmlisteStore {
   private db: DatabaseSync;
   private insertEntry: StatementSync;
-  private touchEntry: StatementSync;
+  private updateEntry: StatementSync;
   private insertSearchText: StatementSync;
 
   constructor(readonly filePath: string) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     this.db = this.openWithSchema();
     this.insertEntry = this.db.prepare(
-      `INSERT INTO entries (hash, generation, channel, topic, title, description, timestamp, duration,
-         size, url_website, url_subtitle, url_video, url_video_low, url_video_hd, filmliste_timestamp)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(hash) DO NOTHING RETURNING id`
+      `INSERT INTO entries (key, added_generation, seen_generation, channel, topic, title,
+         description, timestamp, duration, size, url_website, url_subtitle, url_video,
+         url_video_low, url_video_hd, filmliste_timestamp)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO NOTHING RETURNING id`
     );
-    this.touchEntry = this.db.prepare("UPDATE entries SET generation = ? WHERE hash = ?");
+    this.updateEntry = this.db.prepare(
+      `UPDATE entries SET seen_generation = ?, description = ?, timestamp = ?, duration = ?,
+         size = ?, url_website = ?, url_subtitle = ?, url_video_low = ?, url_video_hd = ?
+       WHERE key = ?`
+    );
     this.insertSearchText = this.db.prepare(
       "INSERT INTO entries_fts (rowid, channel, topic, title) VALUES (?, ?, ?, ?)"
     );
@@ -121,8 +119,9 @@ export class FilmlisteStore {
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY,
-        hash TEXT NOT NULL UNIQUE,
-        generation INTEGER NOT NULL,
+        key TEXT NOT NULL UNIQUE,
+        added_generation INTEGER NOT NULL,
+        seen_generation INTEGER NOT NULL,
         channel TEXT NOT NULL,
         topic TEXT NOT NULL,
         title TEXT NOT NULL,
@@ -139,6 +138,7 @@ export class FilmlisteStore {
       );
       CREATE INDEX IF NOT EXISTS entries_filmliste_timestamp ON entries (filmliste_timestamp);
       CREATE INDEX IF NOT EXISTS entries_timestamp ON entries (timestamp);
+      CREATE INDEX IF NOT EXISTS entries_added_generation ON entries (added_generation);
       CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5 (
         channel, topic, title,
         content = '', contentless_delete = 1,
@@ -207,13 +207,52 @@ export class FilmlisteStore {
     };
   }
 
-  /** Start an import generation. Entries not seen again are removed by finishImport. */
-  beginImport(): number {
-    return (Number(this.getMeta("generation")) || 0) + 1;
+  /** Last completed import; rows added by later, unfinished attempts are not visible. */
+  private committedGeneration(): number {
+    return Number(this.getMeta("generation")) || 0;
   }
 
   /**
-   * Store a batch of entries. New entries record when they first appeared, which
+   * Delete up to `limit` rows left by a failed import attempt. Returns the number
+   * deleted, so callers can remove large leftovers in steps without blocking.
+   */
+  discardPending(limit = 5000): number {
+    return this.transaction(() => {
+      const committed = this.committedGeneration();
+      const pending = "SELECT id FROM entries WHERE added_generation > ? ORDER BY id LIMIT ?";
+      this.runReadingBigInts(
+        `DELETE FROM entries_fts WHERE rowid IN (${pending})`,
+        committed,
+        limit
+      );
+      return Number(
+        this.runReadingBigInts(`DELETE FROM entries WHERE id IN (${pending})`, committed, limit)
+          .changes
+      );
+    });
+  }
+
+  /**
+   * Start an import attempt. Every attempt gets a new number, so rows touched by
+   * a failed attempt can never be mistaken for rows of a later one. Call
+   * discardPending() until it returns 0 first.
+   */
+  beginImport(): number {
+    const attempt = Math.max(this.committedGeneration(), Number(this.getMeta("attempt")) || 0) + 1;
+    this.setMeta("attempt", attempt);
+    return attempt;
+  }
+
+  // FTS5 deletes can report an internal last-insert rowid beyond Number.MAX_SAFE_INTEGER.
+  private runReadingBigInts(sql: string, ...params: number[]) {
+    const statement = this.db.prepare(sql);
+    statement.setReadBigInts(true);
+    return statement.run(...params);
+  }
+
+  /**
+   * Store a batch of entries. New rows stay invisible until finishImport; known
+   * rows get updated metadata. New entries record when they first appeared, which
    * keeps "sort by newest" (the Newznab RSS feed) stable across list updates.
    * The first import has no history, so it uses each entry's past broadcast time.
    * Undated and future entries (~30k) would otherwise all tie at the list time
@@ -223,14 +262,15 @@ export class FilmlisteStore {
     const initialImport = this.getMeta("list_timestamp") === null;
     this.transaction(() => {
       for (const entry of entries) {
-        const hash = entryHash(entry);
+        const key = entryKey(entry);
         const firstSeen = !initialImport
           ? listTimestamp
           : entry.timestamp > 0 && entry.timestamp <= listTimestamp
             ? entry.timestamp
             : 0;
         const inserted = this.insertEntry.get(
-          hash,
+          key,
+          generation,
           generation,
           entry.channel,
           entry.topic,
@@ -254,24 +294,34 @@ export class FilmlisteStore {
             foldText(entry.title)
           );
         } else {
-          this.touchEntry.run(generation, hash);
+          this.updateEntry.run(
+            generation,
+            entry.description,
+            entry.timestamp,
+            entry.duration,
+            entry.size,
+            entry.url_website,
+            entry.url_subtitle,
+            entry.url_video_low,
+            entry.url_video_hd,
+            key
+          );
         }
       }
     });
   }
 
-  /** Remove entries missing from this list and record the completed import. */
+  /**
+   * Atomically publish a validated import: remove entries missing from this list
+   * and make the rows added by this attempt visible.
+   */
   finishImport(generation: number, listTimestamp: number, lastModified: string | null) {
     this.transaction(() => {
-      for (const sql of [
-        "DELETE FROM entries_fts WHERE rowid IN (SELECT id FROM entries WHERE generation < ?)",
-        "DELETE FROM entries WHERE generation < ?",
-      ]) {
-        const statement = this.db.prepare(sql);
-        // FTS5 deletes can report an internal last-insert rowid beyond Number.MAX_SAFE_INTEGER.
-        statement.setReadBigInts(true);
-        statement.run(generation);
-      }
+      this.runReadingBigInts(
+        "DELETE FROM entries_fts WHERE rowid IN (SELECT id FROM entries WHERE seen_generation < ?)",
+        generation
+      );
+      this.runReadingBigInts("DELETE FROM entries WHERE seen_generation < ?", generation);
       const { count } = this.db.prepare("SELECT COUNT(*) AS count FROM entries").get() as {
         count: number;
       };
@@ -290,8 +340,8 @@ export class FilmlisteStore {
   ): ApiResultItem[] {
     const match = buildMatchExpression(queries);
     if (match === null) return [];
-    const where: string[] = [];
-    const params: (string | number)[] = [];
+    const where = ["added_generation <= ?"];
+    const params: (string | number)[] = [this.committedGeneration()];
     if (match !== undefined) {
       where.push("id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?)");
       params.push(match);
@@ -309,7 +359,7 @@ export class FilmlisteStore {
       .prepare(
         `SELECT channel, topic, title, description, timestamp, duration, size, url_website,
            url_subtitle, url_video, url_video_low, url_video_hd, filmliste_timestamp
-         FROM entries ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+         FROM entries WHERE ${where.join(" AND ")}
          ORDER BY ${column} ${direction}, id ${direction} LIMIT ?`
       )
       .all(...params) as unknown as EntryRow[];

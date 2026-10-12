@@ -70,6 +70,33 @@ describe("FilmlisteStore", () => {
     expect(titles(store.search([{ fields: ["title"], query: "Alt" }], 10))).toEqual([]);
   });
 
+  it("keeps an unfinished import invisible and drops its leftovers on the next attempt", () => {
+    importList([film("A"), film("B")], LIST_1);
+
+    // A failed attempt: batches were written, but the import never finished.
+    const failed = store.beginImport();
+    store.writeBatch([film("B"), film("C")], failed, LIST_2);
+    expect(titles(store.search([], 10, { sortBy: "title", sortOrder: "asc" }))).toEqual(["A", "B"]);
+
+    while (store.discardPending() > 0);
+    importList([film("A")], LIST_2);
+    expect(titles(store.search([], 10))).toEqual(["A"]);
+    expect(store.info().entryCount).toBe(1);
+  });
+
+  it("updates changed metadata without treating the film as new", () => {
+    importList([film("Folge", { description: "alt", size: 1 })], LIST_1);
+    importList([film("Folge", { description: "neu", size: 2 })], LIST_2);
+
+    expect(store.search([], 10)).toEqual([
+      expect.objectContaining({
+        description: "neu",
+        size: 2,
+        filmlisteTimestamp: LIST_1 - 3600,
+      }),
+    ]);
+  });
+
   it("searches word prefixes with folded umlauts across the requested fields", () => {
     importList(
       [
@@ -165,5 +192,10 @@ describe("resolveFilmlistePath", () => {
     expect(resolveFilmlistePath()).toBe("/app/prisma/data/filmliste.db");
     process.env.DATABASE_URL = "file:./data/rundfunkarr.db";
     expect(resolveFilmlistePath()).toBe(path.resolve(process.cwd(), "prisma/data/filmliste.db"));
+  });
+
+  it("never resolves to the main database file", () => {
+    process.env.DATABASE_URL = "file:/data/filmliste.db";
+    expect(resolveFilmlistePath()).toBe("/data/filmliste-index.db");
   });
 });

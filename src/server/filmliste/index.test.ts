@@ -113,6 +113,21 @@ describe("updateFilmliste", () => {
     expect((await getFilmlisteStatus()).lastError).toContain("unvollständig");
   });
 
+  it("waits a quarter interval before retrying a failed first import", async () => {
+    const { runScheduledUpdate } = await import(".");
+    serve(compressedList(10), LIST_TIMESTAMP + 1500);
+
+    await runScheduledUpdate();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await runScheduledUpdate();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Default interval: 2 hours, so the retry follows after 30 minutes.
+    vi.setSystemTime(Date.now() + 31 * 60 * 1000);
+    await runScheduledUpdate();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it("falls back to the public API when disabled or outdated", async () => {
     const { searchLocalFilmliste, updateFilmliste } = await import(".");
     serve(fullList, LIST_TIMESTAMP + 1500);

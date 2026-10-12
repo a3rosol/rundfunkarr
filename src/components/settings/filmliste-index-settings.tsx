@@ -45,11 +45,12 @@ export function FilmlisteIndexSettings() {
   const localSelected = currentSource === "local";
   const currentHours = hours ?? settings?.["mediathek.localIndex.updateHours"] ?? "2";
 
-  const loadStatus = useCallback(async (signal?: AbortSignal) => {
+  const loadStatus = useCallback(async (signal?: AbortSignal): Promise<FilmlisteStatus> => {
     const response = await fetch("/api/filmliste", { cache: "no-store", signal });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Status konnte nicht geladen werden.");
     setStatus(data);
+    return data;
   }, []);
 
   useEffect(() => {
@@ -95,9 +96,9 @@ export function FilmlisteIndexSettings() {
       });
       setSource(null);
       setHours(null);
-      await loadStatus();
+      const fresh = await loadStatus();
       // Build the index right away instead of waiting for the scheduler.
-      if (localSelected && status && !status.running && status.entryCount === 0) {
+      if (localSelected && !fresh.running && fresh.entryCount === 0) {
         await request("POST");
       }
     });
