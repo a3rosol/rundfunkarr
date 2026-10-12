@@ -228,7 +228,7 @@ async function runUpdate(force: boolean): Promise<UpdateResult> {
   }
   if (listTimestamp === null || state.processedEntries < MIN_PLAUSIBLE_ENTRIES) {
     throw new Error(
-      `Filmliste unvollständig (${state.processedEntries} Einträge); Index bleibt unverändert`
+      `Filmliste unvollständig (${state.processedEntries} Einträge); der bisherige Eintragsbestand bleibt erhalten`
     );
   }
   store.finishImport(generation, listTimestamp, lastModified);
