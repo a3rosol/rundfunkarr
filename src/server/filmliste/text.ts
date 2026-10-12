@@ -3,8 +3,8 @@
  *
  * Search semantics follow MediathekViewWeb so switching between the local
  * index and the public API does not change which entries a query finds:
- * - German umlauts fold to their two-letter forms (ä → ae, ß → ss), other
- *   accents are dropped, and matching is case-insensitive.
+ * - German umlauts fold to their two-letter forms (ä → ae, ß → ss), "&" becomes
+ *   "und", other accents are dropped, and matching is case-insensitive.
  * - Every word of a query is a prefix match ("tatort" finds "Tatortreiniger").
  * - All words of one query must occur, each in any of the query's fields.
  * - Queries on the same field set are alternatives (OR); groups on different
@@ -25,10 +25,11 @@ const FOLDINGS: Record<string, string> = {
   ø: "o",
 };
 
-/** Lowercase, fold umlauts and strip remaining diacritics. */
+/** Lowercase, fold umlauts and "&", and strip remaining diacritics. */
 export function foldText(text: string): string {
   return text
     .toLowerCase()
+    .replace(/&/g, "und")
     .replace(/[äöüßæœø]/g, (char) => FOLDINGS[char])
     .normalize("NFD")
     .replace(/\p{M}/gu, "");

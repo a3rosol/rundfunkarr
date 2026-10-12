@@ -97,6 +97,33 @@ describe("FilmlisteStore", () => {
     ]);
   });
 
+  it("publishes changed metadata of known films only with a completed import", () => {
+    importList([film("Folge", { description: "alt", size: 1 })], LIST_1);
+
+    const failed = store.beginImport();
+    store.writeBatch([film("Folge", { description: "abgebrochen", size: 9 })], failed, LIST_2);
+    expect(store.search([], 10)).toEqual([
+      expect.objectContaining({ description: "alt", size: 1 }),
+    ]);
+
+    while (store.discardPending() > 0);
+    importList([film("Folge", { description: "alt", size: 1 })], LIST_2);
+    expect(store.search([], 10)).toEqual([
+      expect.objectContaining({ description: "alt", size: 1 }),
+    ]);
+  });
+
+  it('matches "&" and "und" alike, as MediathekViewWeb does', () => {
+    importList([film("Kunst & Krempel"), film("Bares für Rares")], LIST_1);
+
+    expect(titles(store.search([{ fields: ["title"], query: "Kunst und Krempel" }], 10))).toEqual([
+      "Kunst & Krempel",
+    ]);
+    expect(titles(store.search([{ fields: ["title"], query: "&" }], 10))).toEqual([
+      "Kunst & Krempel",
+    ]);
+  });
+
   it("searches word prefixes with folded umlauts across the requested fields", () => {
     importList(
       [
@@ -196,6 +223,8 @@ describe("resolveFilmlistePath", () => {
 
   it("never resolves to the main database file", () => {
     process.env.DATABASE_URL = "file:/data/filmliste.db";
+    expect(resolveFilmlistePath()).toBe("/data/filmliste-index.db");
+    process.env.DATABASE_URL = "file:/data/./sub/../filmliste.db";
     expect(resolveFilmlistePath()).toBe("/data/filmliste-index.db");
   });
 });

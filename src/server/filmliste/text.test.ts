@@ -3,6 +3,7 @@ import { buildMatchExpression, foldText, queryTokens, UnsupportedQueryError } fr
 
 describe("foldText", () => {
   it("folds umlauts like MediathekViewWeb and strips other accents", () => {
+    expect(foldText("Kunst & Krempel")).toBe("kunst und krempel");
     expect(foldText("Die Höhle der Löwen – Straße, Café")).toBe(
       "die hoehle der loewen – strasse, cafe"
     );

@@ -15,9 +15,21 @@ import type { ApiResultItem } from "@/types";
 import type { FilmlisteEntry } from "./parser";
 import { buildMatchExpression, foldText } from "./text";
 
-const SCHEMA_VERSION = "2";
+const SCHEMA_VERSION = "3";
 /** MediathekViewWeb never returns more than 1000 results per query. */
 export const MAX_RESULTS = 1000;
+
+/** Metadata that may change for a known film; updated when an import is published. */
+const MUTABLE_COLUMNS = [
+  "description",
+  "timestamp",
+  "duration",
+  "size",
+  "url_website",
+  "url_subtitle",
+  "url_video_low",
+  "url_video_hd",
+] as const;
 
 const SORT_COLUMNS: Record<string, string> = {
   filmlisteTimestamp: "filmliste_timestamp",
@@ -56,12 +68,21 @@ interface EntryRow {
 export function resolveFilmlistePath(): string {
   const url = process.env.DATABASE_URL ?? "file:./data/rundfunkarr.db";
   const file = url.replace(/^file:/, "").split("?")[0];
-  const databasePath = path.isAbsolute(file) ? file : path.resolve(process.cwd(), "prisma", file);
+  const databasePath = path.resolve(process.cwd(), "prisma", file);
   const indexPath = path.join(path.dirname(databasePath), "filmliste.db");
   // Deleting or rebuilding the index removes its file; never let it alias the main database.
-  return indexPath === databasePath
+  return canonicalPath(indexPath) === canonicalPath(databasePath)
     ? path.join(path.dirname(databasePath), "filmliste-index.db")
     : indexPath;
+}
+
+/** Resolve symlinks where the path exists, so two names for one file compare equal. */
+function canonicalPath(filePath: string): string {
+  try {
+    return fs.realpathSync.native(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
 }
 
 export function removeIndexFiles(filePath: string) {
@@ -81,7 +102,8 @@ function entryKey(entry: FilmlisteEntry): string {
 export class FilmlisteStore {
   private db: DatabaseSync;
   private insertEntry: StatementSync;
-  private updateEntry: StatementSync;
+  private touchEntry: StatementSync;
+  private stageUpdate: StatementSync;
   private insertSearchText: StatementSync;
 
   constructor(readonly filePath: string) {
@@ -94,10 +116,13 @@ export class FilmlisteStore {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING RETURNING id`
     );
-    this.updateEntry = this.db.prepare(
-      `UPDATE entries SET seen_generation = ?, description = ?, timestamp = ?, duration = ?,
-         size = ?, url_website = ?, url_subtitle = ?, url_video_low = ?, url_video_hd = ?
-       WHERE key = ?`
+    this.touchEntry = this.db.prepare(
+      `UPDATE entries SET seen_generation = ? WHERE key = ?
+       RETURNING ${MUTABLE_COLUMNS.join(", ")}`
+    );
+    this.stageUpdate = this.db.prepare(
+      `INSERT OR REPLACE INTO pending_updates (key, ${MUTABLE_COLUMNS.join(", ")})
+       VALUES (?, ${MUTABLE_COLUMNS.map(() => "?").join(", ")})`
     );
     this.insertSearchText = this.db.prepare(
       "INSERT INTO entries_fts (rowid, channel, topic, title) VALUES (?, ?, ?, ?)"
@@ -139,6 +164,17 @@ export class FilmlisteStore {
       CREATE INDEX IF NOT EXISTS entries_filmliste_timestamp ON entries (filmliste_timestamp);
       CREATE INDEX IF NOT EXISTS entries_timestamp ON entries (timestamp);
       CREATE INDEX IF NOT EXISTS entries_added_generation ON entries (added_generation);
+      CREATE TABLE IF NOT EXISTS pending_updates (
+        key TEXT PRIMARY KEY,
+        description TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        duration INTEGER NOT NULL,
+        size INTEGER NOT NULL,
+        url_website TEXT NOT NULL,
+        url_subtitle TEXT NOT NULL,
+        url_video_low TEXT NOT NULL,
+        url_video_hd TEXT NOT NULL
+      );
       CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5 (
         channel, topic, title,
         content = '', contentless_delete = 1,
@@ -239,7 +275,10 @@ export class FilmlisteStore {
    */
   beginImport(): number {
     const attempt = Math.max(this.committedGeneration(), Number(this.getMeta("attempt")) || 0) + 1;
-    this.setMeta("attempt", attempt);
+    this.transaction(() => {
+      this.db.exec("DELETE FROM pending_updates");
+      this.setMeta("attempt", attempt);
+    });
     return attempt;
   }
 
@@ -251,8 +290,8 @@ export class FilmlisteStore {
   }
 
   /**
-   * Store a batch of entries. New rows stay invisible until finishImport; known
-   * rows get updated metadata. New entries record when they first appeared, which
+   * Store a batch of entries. New rows and changed metadata of known rows stay
+   * invisible until finishImport publishes them. New entries record when they first appeared, which
    * keeps "sort by newest" (the Newznab RSS feed) stable across list updates.
    * The first import has no history, so it uses each entry's past broadcast time.
    * Undated and future entries (~30k) would otherwise all tie at the list time
@@ -294,18 +333,13 @@ export class FilmlisteStore {
             foldText(entry.title)
           );
         } else {
-          this.updateEntry.run(
-            generation,
-            entry.description,
-            entry.timestamp,
-            entry.duration,
-            entry.size,
-            entry.url_website,
-            entry.url_subtitle,
-            entry.url_video_low,
-            entry.url_video_hd,
-            key
-          );
+          const current = this.touchEntry.get(generation, key) as Pick<
+            FilmlisteEntry,
+            (typeof MUTABLE_COLUMNS)[number]
+          >;
+          if (MUTABLE_COLUMNS.some((column) => current[column] !== entry[column])) {
+            this.stageUpdate.run(key, ...MUTABLE_COLUMNS.map((column) => entry[column]));
+          }
         }
       }
     });
@@ -322,6 +356,11 @@ export class FilmlisteStore {
         generation
       );
       this.runReadingBigInts("DELETE FROM entries WHERE seen_generation < ?", generation);
+      this.db.exec(
+        `UPDATE entries SET ${MUTABLE_COLUMNS.map((column) => `${column} = pending.${column}`).join(", ")}
+         FROM pending_updates AS pending WHERE entries.key = pending.key;
+         DELETE FROM pending_updates;`
+      );
       const { count } = this.db.prepare("SELECT COUNT(*) AS count FROM entries").get() as {
         count: number;
       };
