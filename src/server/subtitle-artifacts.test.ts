@@ -57,6 +57,51 @@ afterEach(async () => {
 });
 
 describe("subtitle artifact ownership", () => {
+  it("uses ARD playback subtitles instead of the ten-hour EBU broadcast timeline", async () => {
+    const ebu = "https://api.ardmediathek.de/player-service/subtitle/ebutt/urn:ard:subtitle:test";
+    const vtt =
+      "https://api.ardmediathek.de/player-service/subtitle/webvtt/urn:ard:subtitle:test.vtt";
+    fetchSubtitle.mockImplementation(async (url: string) =>
+      url === vtt
+        ? "WEBVTT\n\n00:00:03.960 --> 00:00:05.360\nSubtitle\n"
+        : '<tt><body><p begin="10:00:03.960" end="10:00:05.360">Subtitle</p></body></tt>'
+    );
+
+    const result = await processSubtitles(video, JSON.stringify({ subtitleUrl: ebu }));
+
+    expect(result.warning).toBeNull();
+    await expect(readFile(result.artifact!.path, "utf8")).resolves.toBe(
+      "1\n00:00:03,960 --> 00:00:05,360\nSubtitle\n"
+    );
+    expect(fetchSubtitle).toHaveBeenCalledExactlyOnceWith(vtt);
+  });
+
+  it("keeps the video when ARD playback subtitles fail instead of embedding broadcast times", async () => {
+    getSetting.mockResolvedValue("embed");
+    const ebu = "https://api.ardmediathek.de/player-service/subtitle/ebutt/urn:ard:subtitle:test";
+    fetchSubtitle.mockRejectedValueOnce(new Error("Untertitelabruf fehlgeschlagen (HTTP 404)."));
+
+    const result = await processSubtitles(video, JSON.stringify({ subtitleUrl: ebu }));
+
+    expect(result.warning).toContain("404");
+    expect(result.artifact).toBeNull();
+    expect(fetchSubtitle).toHaveBeenCalledExactlyOnceWith(
+      "https://api.ardmediathek.de/player-service/subtitle/webvtt/urn:ard:subtitle:test.vtt"
+    );
+    expect(spawn).not.toHaveBeenCalled();
+    await expect(readFile(video, "utf8")).resolves.toBe("completed video");
+  });
+
+  it.each([
+    "https://example.org/player-service/subtitle/ebutt/urn:ard:subtitle:test",
+    "https://api.ardmediathek.de.example.org/player-service/subtitle/ebutt/urn:ard:subtitle:test",
+    "https://api.ardmediathek.de/other/ebutt/test",
+    "https://api.ardmediathek.de/player-service/subtitle/webvtt/urn:ard:subtitle:test.vtt",
+  ])("preserves other subtitle URLs: %s", async (subtitleUrl) => {
+    await processSubtitles(video, JSON.stringify({ subtitleUrl }));
+    expect(fetchSubtitle).toHaveBeenCalledExactlyOnceWith(subtitleUrl);
+  });
+
   it.each(["A.subtitles.mkv", "A.srt.tmp"])(
     "preserves an unrelated %s when fetching subtitles fails",
     async (filename) => {

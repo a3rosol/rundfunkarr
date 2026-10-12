@@ -277,7 +277,16 @@ describe("Warteschlange mit SQLite und echten HTTP-Übertragungen", () => {
     blocked.add("/a.mp4");
     blocked.add("/b.mp4");
     const processing = startDownloadProcessing();
-    await vi.waitFor(() => expect(requests).toEqual(["/b.mp4", "/a.mp4"]));
+    // Concurrent workers may reach the HTTP server in either order. Check
+    // scheduling priority at the database selection boundary instead.
+    await vi.waitFor(() => expect([...requests].sort()).toEqual(["/a.mp4", "/b.mp4"]));
+    const selections = await Promise.all(
+      vi
+        .mocked(prisma.download.findFirst)
+        .mock.results.slice(0, 2)
+        .map((result) => result.value)
+    );
+    expect(selections.map((entry) => entry?.id)).toEqual(["b", "a"]);
     expect(await prisma.download.count({ where: { status: "downloading" } })).toBe(2);
     expect(await prisma.download.count({ where: { status: "queued" } })).toBe(1);
     for (const response of pending) response.end(bytes.subarray(2));
