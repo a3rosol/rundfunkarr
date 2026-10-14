@@ -6,6 +6,8 @@ export function getStatusBadge(status: string) {
       return <Badge className="bg-blue-500">Lädt</Badge>;
     case "extracting":
       return <Badge className="bg-yellow-500">Konvertiert</Badge>;
+    case "running":
+      return <Badge className="bg-purple-500">Skript läuft</Badge>;
     case "paused":
       return <Badge variant="outline">Pausiert</Badge>;
     case "retrying":

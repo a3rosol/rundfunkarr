@@ -101,7 +101,7 @@ async function drain(): Promise<void> {
 export async function recoverDownloads(): Promise<void> {
   if (state.recovered) return;
   await prisma.download.updateMany({
-    where: { status: { in: ["downloading", "converting"] } },
+    where: { status: { in: ["downloading", "converting", "postprocessing"] } },
     data: {
       status: "queued",
       progress: 0,

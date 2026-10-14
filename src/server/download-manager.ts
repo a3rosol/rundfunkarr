@@ -1,7 +1,9 @@
 import { processSubtitles } from "./subtitles";
 import { prisma } from "@/lib/db";
-import { isMkvConversionEnabled } from "@/lib/settings";
+import { getSetting, isMkvConversionEnabled } from "@/lib/settings";
 import { downloadHlsStream } from "./ytdlp";
+import { runPostProcessScript } from "./post-process";
+import { deleteSubtitleSidecar, type SubtitleArtifact } from "./subtitle-artifact";
 import { getStreamHeight, isStreamingUrl, srfUrnFromUrl } from "@/lib/stream-url";
 import * as fs from "fs/promises";
 import { createWriteStream } from "fs";
@@ -60,6 +62,58 @@ async function moveIntoCategoryDir(
     await fs.mkdir(categoryDir, { recursive: true });
     await move();
   }
+}
+
+/**
+ * Run the configured post-processing script before the download is reported
+ * as completed, so it sees the file before Sonarr/Radarr import it (as with
+ * SABnzbd). Script problems only add a warning; the file stays importable.
+ */
+async function runConfiguredScript(
+  download: { id: string; title: string; category: string; url: string },
+  filePath: string,
+  subtitle: SubtitleArtifact | null,
+  storagePath: string,
+  size: number,
+  signal: AbortSignal
+): Promise<string | null> {
+  let script: string | undefined;
+  try {
+    script = (await getSetting("download.postProcessScript"))?.trim();
+  } catch {
+    return "Post-Processing-Skript konnte nicht gelesen werden.";
+  }
+  if (!script) return null;
+  await prisma.download.update({
+    where: { id: download.id },
+    data: { status: "postprocessing" },
+  });
+  const warning = await runPostProcessScript(
+    script,
+    {
+      id: download.id,
+      title: download.title,
+      category: download.category,
+      url: download.url,
+      filePath,
+      storagePath,
+      size,
+    },
+    signal
+  );
+  if (signal.aborted) {
+    // Paused or cancelled while the script ran: as during conversion, the
+    // download must not complete. Withdraw the published files so nothing is
+    // left behind; resuming downloads them again.
+    await fs.unlink(filePath).catch(() => {});
+    await deleteSubtitleSidecar(subtitle && JSON.stringify(subtitle));
+    signal.throwIfAborted();
+  }
+  return warning;
+}
+
+function joinWarnings(...warnings: (string | null)[]): string | null {
+  return warnings.filter(Boolean).join(" ") || null;
 }
 
 async function processDownload(
@@ -168,6 +222,14 @@ async function processDownload(
             `${download.title}.${container}`
           )
         : finalMkvPath;
+      const scriptWarning = await runConfiguredScript(
+        download,
+        finalMkvPath,
+        artifact,
+        storagePath,
+        stats.size,
+        signal
+      );
 
       // Mark as completed
       const downloadTime = Math.floor((Date.now() - startTime) / 1000);
@@ -176,7 +238,7 @@ async function processDownload(
         where: { id: downloadId },
         data: {
           status: "completed",
-          warning,
+          warning: joinWarnings(warning, scriptWarning),
           subtitleArtifact: artifact ? JSON.stringify(artifact) : null,
           progress: 100,
           size: stats.size,
@@ -269,6 +331,14 @@ async function processDownload(
       const storagePath = downloadFolderMapping
         ? path.join(downloadFolderMapping, categoryFolder, downloadId, `${download.title}.mkv`)
         : finalMkvPath;
+      const scriptWarning = await runConfiguredScript(
+        download,
+        finalMkvPath,
+        artifact,
+        storagePath,
+        stats.size,
+        signal
+      );
 
       // Mark as completed
       const downloadTime = Math.floor((Date.now() - startTime) / 1000);
@@ -277,7 +347,7 @@ async function processDownload(
         where: { id: downloadId },
         data: {
           status: "completed",
-          warning,
+          warning: joinWarnings(warning, scriptWarning),
           subtitleArtifact: artifact ? JSON.stringify(artifact) : null,
           progress: 100,
           size: stats.size,
@@ -307,12 +377,20 @@ async function processDownload(
             `${download.title}${fileExtension}`
           )
         : finalPath;
+      const scriptWarning = await runConfiguredScript(
+        download,
+        finalPath,
+        artifact,
+        storagePath,
+        stats.size,
+        signal
+      );
 
       await prisma.download.update({
         where: { id: downloadId },
         data: {
           status: "completed",
-          warning,
+          warning: joinWarnings(warning, scriptWarning),
           subtitleArtifact: artifact ? JSON.stringify(artifact) : null,
           progress: 100,
           size: stats.size,

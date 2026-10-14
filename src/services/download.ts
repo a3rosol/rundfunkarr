@@ -153,7 +153,7 @@ function triggerDownloadProcessing(): void {
 export async function getQueue(): Promise<SabnzbdQueue> {
   const downloads = await prisma.download.findMany({
     where: {
-      status: { in: ["queued", "downloading", "converting", "paused"] },
+      status: { in: ["queued", "downloading", "converting", "postprocessing", "paused"] },
     },
     orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
   });
@@ -162,6 +162,8 @@ export async function getQueue(): Promise<SabnzbdQueue> {
     let statusText = "Queued";
     if (d.status === "downloading") statusText = "Downloading";
     else if (d.status === "converting") statusText = "Extracting";
+    // SABnzbd reports a running post-processing script as "Running".
+    else if (d.status === "postprocessing") statusText = "Running";
     else if (d.status === "paused") statusText = "Paused";
 
     // Convert BigInt to Number for arithmetic operations
@@ -247,7 +249,9 @@ export async function deleteHistoryItem(nzoId: string, delFiles: boolean): Promi
     return false;
   }
 
-  if (["queued", "downloading", "converting", "paused"].includes(download.status)) {
+  if (
+    ["queued", "downloading", "converting", "postprocessing", "paused"].includes(download.status)
+  ) {
     const { controlDownload } = await import("@/server/download-queue");
     await controlDownload(nzoId, "cancel");
     // Completion can win the cancellation race and publish a new file path.

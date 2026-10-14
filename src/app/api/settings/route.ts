@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   "download.quality": "all",
   "download.convertToMkv": "true",
   "download.subtitleMode": "off",
+  "download.postProcessScript": "",
   "matching.audioVariant": "all",
 
   // API Keys

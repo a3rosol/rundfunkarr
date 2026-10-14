@@ -25,7 +25,9 @@ export async function handleQueueCommand(params: URLSearchParams): Promise<NextR
   const status = await controlDownload(id, action, priority === -100 ? 0 : priority * 10);
   if (status && name === "priority") {
     const items = await prisma.download.findMany({
-      where: { status: { in: ["queued", "paused", "downloading", "converting"] } },
+      where: {
+        status: { in: ["queued", "paused", "downloading", "converting", "postprocessing"] },
+      },
       orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
     });
     return NextResponse.json({ status: true, position: items.findIndex((item) => item.id === id) });
